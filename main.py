@@ -52,8 +52,8 @@ LED_SYMMETRIC_ROWS = [(1, 10), (2, 9), (3, 8), (4, 7), (5, 6)]
 PRESETS = [
     {"id": 1, "title": "cDNA synthesis", "duration_sec": 26 * 60},
     {"id": 2, "title": "qPCR run", "duration_sec": 97 * 60},
-    {"id": 3, "title": "Media Warmup", "duration_sec": 30 * 60},
-    {"id": 4, "title": "Overnight Reaction", "duration_sec": 8 * 60 * 60},
+    {"id": 3, "title": "Restriction incubation", "duration_sec": 30 * 60},
+    {"id": 4, "title": "Electrophoresis", "duration_sec": 30 * 60},
 ]
 
 MENU_ITEMS = [{"type": "preset", "title": p["title"], "data": p} for p in PRESETS]
@@ -569,11 +569,14 @@ def lcd_fill_circle(x, y, radius, color):
 
 
 def lcd_update_text_field(field_id, x, y, w, h, text, fg, bg):
-    key = (str(text), fg, bg)
+    text_str = str(text)
+    key = (text_str, fg, bg)
     if display_cache.get(field_id) == key:
         return
+
     lcd_fill_rect(x, y, w, h, bg)
-    lcd_print_at(x, y, text, fg)
+    lcd_print_at(x, y, text_str, fg)
+
     display_cache[field_id] = key
 
 
@@ -598,7 +601,6 @@ def state_color(phase):
 
 
 def led_buffer_index(position):
-    # LED_CLOCKWISE_MAP stores physical labels 1..10; convert to list index 0..9.
     return LED_CLOCKWISE_MAP[position] - 1
 
 
@@ -617,13 +619,13 @@ def get_battery_info():
     for method_name in candidate_methods:
         if not hasattr(power, method_name):
             continue
-        value = getattr(power, method_name)()
         try:
+            value = getattr(power, method_name)()
             p = int(value)
             if 0 <= p <= 100:
                 percent = p
                 break
-        except (TypeError, ValueError):
+        except Exception:
             continue
 
     is_charging = False
@@ -643,7 +645,7 @@ def render_display_text_fallback(ip_address, current, now_ms, phase):
     else:
         lines.append("Current: %s" % current["title"])
         lines.append("Owner: %s" % current["owner"])
-        lines.append("Remain: %s" % duration_to_clock(remaining_sec(current, now_ms)))
+        lines.append("Remaining: %s" % duration_to_clock(remaining_sec(current, now_ms)))
         lines.append("State: %s" % phase.upper())
 
     if main_menu_open:
@@ -688,18 +690,23 @@ def render_display(ip_address):
         else:
             remain = remaining_sec(current, now_ms)
             lcd_update_text_field("fs_title", 0, 70, 320, 20, current["title"], COLOR_MUTED, COLOR_BG)
-            lcd_update_text_field("fs_remain", 0, 100, 320, 40, "Remain: %s" % duration_to_clock(remain), accent_color, COLOR_BG)
+            lcd_update_text_field("fs_remain_label", 0, 100, 100, 40, "Remain:", COLOR_MUTED, COLOR_BG)
+            lcd_update_text_field("fs_remain_val", 100, 100, 220, 40, duration_to_clock(remain), accent_color, COLOR_BG)
             
             fill_w = 0
             if current["duration_sec"] > 0:
                 fill_w = (300 * remain) // current["duration_sec"]
+            if fill_w < 0: fill_w = 0
+            if fill_w > 298: fill_w = 298
+            
             if display_cache.get("fs_prog_border") != True:
                 lcd_draw_rect(10, 160, 300, 20, COLOR_MUTED, COLOR_BG)
                 display_cache["fs_prog_border"] = True
             if fill_w != last_progress_fill or accent_color != last_progress_color:
-                lcd_fill_rect(11, 161, 298, 18, COLOR_BG)
                 if fill_w > 0:
                     lcd_fill_rect(11, 161, fill_w, 18, accent_color)
+                if fill_w < 298:
+                    lcd_fill_rect(11 + fill_w, 161, 298 - fill_w, 18, COLOR_BG)
                 last_progress_fill = fill_w
                 last_progress_color = accent_color
         return
@@ -736,7 +743,8 @@ def render_display(ip_address):
             display_cache["prog_border"] = False
         lcd_update_text_field("title", 14, 70, 292, 16, "", COLOR_TEXT, COLOR_PANEL)
         lcd_update_text_field("owner", 14, 88, 292, 16, "", COLOR_MUTED, COLOR_PANEL)
-        lcd_update_text_field("remain", 14, 108, 170, 16, "", accent_color, COLOR_PANEL)
+        lcd_update_text_field("remain_label", 14, 108, 86, 16, "", COLOR_MUTED, COLOR_PANEL)
+        lcd_update_text_field("remain_val", 100, 108, 84, 16, "", accent_color, COLOR_PANEL)
         lcd_update_text_field("phase_tag", 188, 108, 118, 16, "", COLOR_MUTED, COLOR_PANEL)
         lcd_update_text_field("no_active", 14, 86, 292, 16, "No active timers", COLOR_MUTED, COLOR_PANEL)
         lcd_fill_rect(15, 157, 290, 12, COLOR_BG)
@@ -750,16 +758,8 @@ def render_display(ip_address):
         lcd_update_text_field("no_active", 14, 86, 292, 16, "", COLOR_MUTED, COLOR_PANEL)
         lcd_update_text_field("title", 14, 70, 292, 16, current["title"], COLOR_TEXT, COLOR_PANEL)
         lcd_update_text_field("owner", 14, 88, 292, 16, "Owner: %s" % current["owner"], COLOR_MUTED, COLOR_PANEL)
-        lcd_update_text_field(
-            "remain",
-            14,
-            108,
-            170,
-            16,
-            "Remaining: %s" % duration_to_clock(remain),
-            accent_color,
-            COLOR_PANEL,
-        )
+        lcd_update_text_field("remain_label", 14, 108, 86, 16, "Remaining:", COLOR_MUTED, COLOR_PANEL)
+        lcd_update_text_field("remain_val", 140, 108, 86, 16, duration_to_clock(remain), accent_color, COLOR_PANEL)
 
         phase_tag = ""
         if phase == "warning":
@@ -771,10 +771,15 @@ def render_display(ip_address):
         fill_w = 0
         if current["duration_sec"] > 0:
             fill_w = (290 * remain) // current["duration_sec"]
+        
+        if fill_w < 0: fill_w = 0
+        if fill_w > 290: fill_w = 290
+            
         if fill_w != last_progress_fill or accent_color != last_progress_color:
-            lcd_fill_rect(15, 157, 290, 12, COLOR_BG)
             if fill_w > 0:
                 lcd_fill_rect(15, 157, fill_w, 12, accent_color)
+            if fill_w < 290:
+                lcd_fill_rect(15 + fill_w, 157, 290 - fill_w, 12, COLOR_BG)
             last_progress_fill = fill_w
             last_progress_color = accent_color
 
@@ -826,6 +831,18 @@ def apply_rgb_frame(colors):
     last_rgb_frame = frame
 
 
+def dim_color(hex_color, intensity):
+    r = (hex_color >> 16) & 0xFF
+    g = (hex_color >> 8) & 0xFF
+    b = hex_color & 0xFF
+    
+    r = int(r * intensity)
+    g = int(g * intensity)
+    b = int(b * intensity)
+    
+    return (r << 16) | (g << 8) | b
+
+
 def compose_rgb_frame(current, now_ms, blink_on):
     phase = timer_phase(current, now_ms)
     colors = [RGB_OFF] * LED_COUNT
@@ -853,29 +870,36 @@ def compose_rgb_frame(current, now_ms, blink_on):
     if remaining_ratio > 1:
         remaining_ratio = 1
 
-    if remaining_ratio > 5/6: lit_rows = 5
-    elif remaining_ratio > 4/6: lit_rows = 4
-    elif remaining_ratio > 3/6: lit_rows = 3
-    elif remaining_ratio > 2/6: lit_rows = 2
-    elif remaining_ratio > 1/6: lit_rows = 1
-    else: lit_rows = 0
+    # Map remaining_ratio [1/6, 1.0] to [0.0, 5.0]
+    lit_value = (remaining_ratio - (1.0 / 6.0)) * 6.0
+    if lit_value < 0:
+        lit_value = 0.0
+    if lit_value > 5.0:
+        lit_value = 5.0
+
+    full_rows = int(lit_value)
+    fraction = lit_value - full_rows
 
     total_rows = len(LED_SYMMETRIC_ROWS)
     active_color = RGB_RUNNING
+    dimmed_color = dim_color(active_color, fraction)
 
-    # Drain toward the bottom: top rows turn off first as time decreases.
-    first_lit_row = total_rows - lit_rows
+    dimming_row_index = total_rows - 1 - full_rows
+
     for row_index, pair in enumerate(LED_SYMMETRIC_ROWS):
         right_label, left_label = pair
         right_index = right_label - 1
         left_index = left_label - 1
-        should_light = row_index >= first_lit_row
-        if should_light:
-            colors[right_index] = active_color
-            colors[left_index] = active_color
+        
+        if row_index > dimming_row_index:
+            c = active_color
+        elif row_index == dimming_row_index:
+            c = dimmed_color
         else:
-            colors[right_index] = RGB_OFF
-            colors[left_index] = RGB_OFF
+            c = RGB_OFF
+            
+        colors[right_index] = c
+        colors[left_index] = c
 
     return colors
 
